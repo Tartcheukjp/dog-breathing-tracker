@@ -7,7 +7,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;600;700;800;900&family=Fraunces:ital,wght@0,300;0,700;1,300&display=swap" rel="stylesheet">
 
 <!-- Firebase -->
-<script type="module">
+<script type="module" defer>
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
@@ -55,6 +55,8 @@ onAuthStateChanged(auth, async user => {
     currentUser = null;
     currentFamily = null;
     currentFamilyId = null;
+    // Hide loading, show login
+    document.getElementById('loadingScreen').style.display = 'none';
     document.getElementById('loginScreen').style.display = 'flex';
     document.getElementById('mainApp').style.display = 'none';
     if (unsubscribeRecords) { unsubscribeRecords(); unsubscribeRecords = null; }
@@ -544,7 +546,10 @@ function setDefaultExportDates() {
 
 window.addEventListener('load',()=>{setManualTimeNow();setDefaultExportDates();});
 
-document.getElementById('membersModal').addEventListener('click',function(e){if(e.target===this)closeMembers();});
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('membersModal');
+  if (modal) modal.addEventListener('click', function(e){ if(e.target===this) closeMembers(); });
+});
 </script>
 
 <style>
@@ -806,7 +811,7 @@ select.input-field{cursor:pointer;}
 </div>
 
 <!-- Login -->
-<div id="loginScreen" style="display:none">
+<div id="loginScreen" style="display:none;">
   <div class="login-card">
     <div class="login-paw">🐾</div>
     <h1>毛孩呼吸守護</h1>
