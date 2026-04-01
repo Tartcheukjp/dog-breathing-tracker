@@ -259,15 +259,55 @@ window.countBreath = function() {
 
 function updateBreathDisplay() { document.getElementById('breathCount').textContent = breathCount; }
 
+let pendingBreathCount = 0;
+
 async function finishTimer() {
   clearInterval(timerInterval);
   isRunning = false;
   document.getElementById('breathBtn').disabled = true;
   document.getElementById('startBtn').disabled = false;
   document.getElementById('startBtn').textContent = '▶ 再次量度';
-  await saveRecord(breathCount, 'timer');
-  showResult(breathCount);
-  showToast('✅ 已儲存到雲端！');
+  pendingBreathCount = breathCount;
+  // Show remarks modal before saving
+  document.getElementById('remarkCount').textContent = breathCount;
+  resetQuickRemarks();
+  document.getElementById('remarksModal').classList.add('open');
+}
+
+window.saveWithRemark = async function() {
+  const note = document.getElementById('remarkInput').value.trim();
+  document.getElementById('remarksModal').classList.remove('open');
+  try {
+    await saveRecord(pendingBreathCount, 'timer', note);
+    showResult(pendingBreathCount, note);
+    showToast('✅ 已儲存到雲端！');
+  } catch(e) { showToast('❌ 儲存失敗'); }
+};
+
+window.skipRemark = async function() {
+  document.getElementById('remarksModal').classList.remove('open');
+  try {
+    await saveRecord(pendingBreathCount, 'timer', '');
+    showResult(pendingBreathCount, '');
+    showToast('✅ 已儲存到雲端！');
+  } catch(e) { showToast('❌ 儲存失敗'); }
+};
+
+window.toggleQuickRemark = function(text, btn) {
+  btn.classList.toggle('selected');
+  rebuildRemarkInput();
+};
+
+function rebuildRemarkInput() {
+  const selected = Array.from(document.querySelectorAll('.quick-remark-btn.selected'))
+    .map(b => b.dataset.label);
+  document.getElementById('remarkInput').value = selected.join('、');
+}
+
+// Reset all quick remark buttons when modal opens
+function resetQuickRemarks() {
+  document.querySelectorAll('.quick-remark-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('remarkInput').value = '';
 }
 
 window.resetTimer = function() {
@@ -296,12 +336,12 @@ window.saveManual = async function() {
     document.getElementById('manualCount').value = '';
     document.getElementById('manualNote').value = '';
     setManualTimeNow();
-    showResult(count);
+    showResult(count, note);
     showToast('✅ 已儲存到雲端！');
   } catch(e) { showToast('❌ 儲存失敗'); }
 };
 
-function showResult(count) {
+function showResult(count, note='') {
   const card = document.getElementById('resultCard');
   card.style.display = 'block';
   card.className = 'result-card';
@@ -318,6 +358,9 @@ function showResult(count) {
     document.getElementById('resultTitle').textContent = `🚨 ${count} 次/分 — 過高！`;
     document.getElementById('resultText').textContent = '呼吸次數過高，請盡快聯絡獸醫！';
   }
+  const noteEl = document.getElementById('resultNote');
+  if (note) { noteEl.textContent = '📝 ' + note; noteEl.style.display = 'block'; }
+  else { noteEl.style.display = 'none'; }
 }
 
 function updateLastRecord() {
@@ -549,6 +592,8 @@ window.addEventListener('load',()=>{setManualTimeNow();setDefaultExportDates();}
 document.addEventListener('DOMContentLoaded', () => {
   const modal = document.getElementById('membersModal');
   if (modal) modal.addEventListener('click', function(e){ if(e.target===this) closeMembers(); });
+  const rModal = document.getElementById('remarksModal');
+  if (rModal) rModal.addEventListener('click', function(e){ if(e.target===this) skipRemark(); });
 });
 </script>
 
@@ -781,6 +826,20 @@ select.input-field{cursor:pointer;}
 /* Members Modal */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:999;}
 .modal-overlay.open{display:flex;}
+.quick-remark-btn {
+  padding: 7px 13px;
+  border-radius: 50px;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: .15s;
+  color: var(--text);
+}
+.quick-remark-btn:hover { background: var(--primary-pale); border-color: var(--primary-light); color: var(--primary); }
+.quick-remark-btn.selected { background: var(--primary); border-color: var(--primary); color: #fff; }
 .modal{background:var(--card);border-radius:var(--radius);padding:24px;width:90%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.2);}
 .modal h2{font-family:'Fraunces',serif;font-size:20px;font-weight:700;margin-bottom:16px;}
 .member-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
@@ -917,6 +976,7 @@ select.input-field{cursor:pointer;}
       <div class="result-card" id="resultCard">
         <h3 id="resultTitle"></h3>
         <p id="resultText"></p>
+        <p id="resultNote" style="display:none;margin-top:6px;font-size:13px;font-style:italic;opacity:.8"></p>
       </div>
 
       <div class="manual-card">
@@ -1020,7 +1080,35 @@ select.input-field{cursor:pointer;}
   </div><!-- /appContent -->
 </div><!-- /mainApp -->
 
-<!-- Members Modal -->
+<!-- Remarks Modal -->
+<div class="modal-overlay" id="remarksModal">
+  <div class="modal">
+    <h2>📝 加入備註</h2>
+    <div style="background:var(--primary-pale);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;text-align:center">
+      <div style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--primary)" id="remarkCount">0</div>
+      <div style="font-size:12px;color:var(--text-muted);font-weight:700">次/分</div>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px;font-weight:600">快捷備註：</p>
+    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px">
+      <button class="quick-remark-btn" data-label="熟睡中" onclick="toggleQuickRemark('熟睡中', this)">😴 熟睡中</button>
+      <button class="quick-remark-btn" data-label="呼吸平穩" onclick="toggleQuickRemark('呼吸平穩', this)">✅ 呼吸平穩</button>
+      <button class="quick-remark-btn" data-label="發夢中" onclick="toggleQuickRemark('發夢中', this)">💭 發夢中</button>
+      <button class="quick-remark-btn" data-label="剛出完街" onclick="toggleQuickRemark('剛出完街', this)">🚶 剛出完街</button>
+      <button class="quick-remark-btn" data-label="靜躺休息" onclick="toggleQuickRemark('靜躺休息', this)">🛋️ 靜躺休息</button>
+      <button class="quick-remark-btn" data-label="進食後" onclick="toggleQuickRemark('進食後', this)">🍖 進食後</button>
+      <button class="quick-remark-btn" data-label="有輕微咳嗽" onclick="toggleQuickRemark('有輕微咳嗽', this)">😮‍💨 有輕微咳嗽</button>
+      <button class="quick-remark-btn" data-label="呼吸略急促" onclick="toggleQuickRemark('呼吸略急促', this)">⚠️ 呼吸略急促</button>
+    </div>
+    <textarea id="remarkInput" class="input-field input-field-wide"
+      placeholder="或自由輸入備註..."
+      style="width:100%;height:70px;resize:none;line-height:1.5;padding:10px 14px;text-align:left"></textarea>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="saveWithRemark()">💾 儲存</button>
+      <button class="btn btn-secondary" onclick="skipRemark()">略過</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="membersModal">
   <div class="modal">
     <h2>👨‍👩‍👧 家庭成員</h2>
