@@ -345,11 +345,11 @@ function showResult(count, note='') {
   const card = document.getElementById('resultCard');
   card.style.display = 'block';
   card.className = 'result-card';
-  if (count <= 30) {
+  if (count <= 12) {
     card.classList.add('normal');
     document.getElementById('resultTitle').textContent = `✅ ${count} 次/分 — 正常`;
     document.getElementById('resultText').textContent = '靜息呼吸次數正常，繼續日常監察。';
-  } else if (count <= 40) {
+  } else if (count <= 15) {
     card.classList.add('warn');
     document.getElementById('resultTitle').textContent = `⚠️ ${count} 次/分 — 偏高`;
     document.getElementById('resultText').textContent = '呼吸次數偏高，建議密切觀察並諮詢獸醫。';
@@ -428,13 +428,13 @@ function renderReport() {
 
 function renderBarChart(data, labels) {
   const nonNull = data.filter(v=>v!==null);
-  const max = nonNull.length?Math.max(...nonNull,40):40;
-  const refPct = (30/max)*100;
+  const max = nonNull.length?Math.max(...nonNull,15):15;
+  const refPct = (12/max)*100;
   const html = data.map((v,i)=>{
     const pct = v!==null?Math.round((v/max)*100):0;
     return `<div class="bar-wrap">
       <div class="bar-val">${v!==null?v:''}</div>
-      <div class="bar ${v!==null&&v>30?'danger-bar':''}" style="height:${pct}%"></div>
+      <div class="bar ${v!==null&&v>12?'danger-bar':''}" style="height:${pct}%"></div>
       <div class="bar-lbl">${labels[i]}</div>
     </div>`;
   }).join('');
@@ -445,7 +445,7 @@ function renderBarChart(data, labels) {
   const line = document.createElement('div');
   line.className='ref-line'; line.style.bottom=refPct+'%';
   const lbl = document.createElement('div');
-  lbl.className='ref-line-label'; lbl.style.bottom=refPct+'%'; lbl.textContent='30次警戒';
+  lbl.className='ref-line-label'; lbl.style.bottom=refPct+'%'; lbl.textContent='12次警戒';
   wrap.appendChild(line); wrap.appendChild(lbl);
 }
 
@@ -470,7 +470,7 @@ window.renderHistory = function() {
 
 function recordHTML(r, showDelete=false) {
   const d = new Date(r.timestamp);
-  const badge = r.count<=30?'ok':r.count<=40?'warn':'bad';
+  const badge = r.count<=12?'ok':r.count<=15?'warn':'bad';
   const del = showDelete?`<button class="rec-del" onclick="deleteRecord('${r.id}')" title="刪除">🗑️</button>`:'';
   const photo = r.recordedByPhoto?`<img src="${r.recordedByPhoto}" class="member-avatar" alt="">`:'<div class="member-avatar-placeholder">👤</div>';
   return `<div class="record-item">
@@ -485,7 +485,7 @@ function recordHTML(r, showDelete=false) {
   </div>`;
 }
 
-function statusText(c){return c<=30?'✅ 正常':c<=40?'⚠️ 偏高':'🚨 過高';}
+function statusText(c){return c<=12?'✅ 正常':c<=15?'⚠️ 偏高':'🚨 過高';}
 
 // ══ Export ══
 window.exportCSV = function() {
@@ -500,7 +500,7 @@ window.exportCSV = function() {
     const d=new Date(r.timestamp);
     const date=d.toLocaleDateString('zh-HK');
     const time=d.toLocaleTimeString('zh-HK',{hour:'2-digit',minute:'2-digit'});
-    const status=r.count<=30?'正常':r.count<=40?'偏高':'過高';
+    const status=r.count<=12?'正常':r.count<=15?'偏高':'過高';
     const method=r.method==='timer'?'計時器':'手動輸入';
     return `${date},${time},${r.count},${status},${method},"${r.recordedByName||''}","${r.note||''}"`;
   }).join('\n');
@@ -1061,15 +1061,15 @@ select.input-field{cursor:pointer;}
         <h3>📏 正常範圍</h3>
         <table class="range-table">
           <tr><th>次數（次/分）</th><th>狀態</th><th>建議</th></tr>
-          <tr><td>≤ 30</td><td><span class="tag ok">✅ 正常</span></td><td>繼續日常監察</td></tr>
-          <tr><td>31–40</td><td><span class="tag warn">⚠️ 偏高</span></td><td>密切觀察，諮詢獸醫</td></tr>
-          <tr><td>> 40</td><td><span class="tag bad">🚨 過高</span></td><td>盡快聯絡獸醫</td></tr>
+          <tr><td>≤ 12</td><td><span class="tag ok">✅ 正常</span></td><td>繼續日常監察</td></tr>
+          <tr><td>13–15</td><td><span class="tag warn">⚠️ 偏高</span></td><td>密切觀察，諮詢獸醫</td></tr>
+          <tr><td>> 15</td><td><span class="tag bad">🚨 過高</span></td><td>盡快聯絡獸醫</td></tr>
         </table>
         <p style="margin-top:8px;font-size:11px">⚠️ 實際範圍請遵照獸醫指示</p>
       </div>
       <div class="info-card">
         <h3>📝 量度貼士</h3>
-        <p>• 狗狗<strong>睡眠或靜躺</strong>時量度<br>• 胸部一起一伏＝一次呼吸<br>• 每日建議同一時間量度<br>• 連續三次 > 30 次應聯絡獸醫<br>• 出現咳嗽或呼吸困難立即求醫</p>
+        <p>• 狗狗<strong>睡眠或靜躺</strong>時量度<br>• 胸部一起一伏＝一次呼吸<br>• 每日建議同一時間量度<br>• 連續三次 > 12 次應聯絡獸醫<br>• 出現咳嗽或呼吸困難立即求醫</p>
       </div>
       <div class="info-card">
         <h3>☁️ 雲端資料</h3>
