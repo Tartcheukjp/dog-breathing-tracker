@@ -1,0 +1,1172 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐾 毛孩呼吸守護</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@300;400;600;700;800;900&family=Fraunces:ital,wght@0,300;0,700;1,300&display=swap" rel="stylesheet">
+
+<!-- Firebase -->
+<script type="module" defer>
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, doc, setDoc, getDoc, addDoc, query, where,
+  orderBy, getDocs, deleteDoc, updateDoc, serverTimestamp, onSnapshot }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAjlAqtIzFaZo9KSsgFq-nAuxhdI4CuG7c",
+  authDomain: "dog-breathing-tracker.firebaseapp.com",
+  projectId: "dog-breathing-tracker",
+  storageBucket: "dog-breathing-tracker.firebasestorage.app",
+  messagingSenderId: "171221537534",
+  appId: "1:171221537534:web:ea029d410791b5a9bacbaf"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// ══ App State ══
+let currentUser = null;
+let currentFamily = null;
+let currentFamilyId = null;
+let timerInterval = null;
+let timeLeft = 60;
+let breathCount = 0;
+let isRunning = false;
+let currentPeriod = 'day';
+let unsubscribeRecords = null;
+let allRecords = [];
+
+const CIRCUMFERENCE = 2 * Math.PI * 80;
+
+// ══ Auth ══
+onAuthStateChanged(auth, async user => {
+  if (user) {
+    currentUser = user;
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('mainApp').style.display = 'block';
+    document.getElementById('userAvatar').src = user.photoURL || '';
+    document.getElementById('userName').textContent = user.displayName || user.email;
+    await loadOrCreateUserProfile(user);
+  } else {
+    currentUser = null;
+    currentFamily = null;
+    currentFamilyId = null;
+    // Hide loading, show login
+    document.getElementById('loadingScreen').style.display = 'none';
+    document.getElementById('loginScreen').style.display = 'flex';
+    document.getElementById('mainApp').style.display = 'none';
+    if (unsubscribeRecords) { unsubscribeRecords(); unsubscribeRecords = null; }
+  }
+});
+
+window.loginWithGoogle = async function() {
+  try {
+    document.getElementById('loginBtn').disabled = true;
+    document.getElementById('loginBtn').textContent = '登入中...';
+    const provider = new GoogleAuthProvider();
+    await signInWithPopup(auth, provider);
+  } catch(e) {
+    console.error(e);
+    showToast('❌ 登入失敗，請重試');
+    document.getElementById('loginBtn').disabled = false;
+    document.getElementById('loginBtn').textContent = '🔑 用 Google 帳號登入';
+  }
+};
+
+window.logoutUser = async function() {
+  if (!confirm('確定登出？')) return;
+  if (unsubscribeRecords) { unsubscribeRecords(); unsubscribeRecords = null; }
+  await signOut(auth);
+};
+
+// ══ User Profile & Family ══
+async function loadOrCreateUserProfile(user) {
+  showLoading(true);
+  try {
+    const userRef = doc(db, 'users', user.uid);
+    const userSnap = await getDoc(userRef);
+    if (!userSnap.exists()) {
+      await setDoc(userRef, { name: user.displayName, email: user.email, photoURL: user.photoURL, createdAt: serverTimestamp() });
+    }
+    const userData = userSnap.exists() ? userSnap.data() : {};
+    if (userData.familyId) {
+      await joinFamilyById(userData.familyId);
+    } else {
+      showLoading(false);
+      showFamilySetup();
+    }
+  } catch(e) {
+    console.error(e);
+    showLoading(false);
+    showToast('❌ 載入失敗，請重試');
+  }
+}
+
+async function joinFamilyById(familyId) {
+  try {
+    const famRef = doc(db, 'families', familyId);
+    const famSnap = await getDoc(famRef);
+    if (famSnap.exists()) {
+      currentFamilyId = familyId;
+      currentFamily = famSnap.data();
+      document.getElementById('familySetup').style.display = 'none';
+      document.getElementById('appContent').style.display = 'block';
+      document.getElementById('dogNameDisplay').textContent = currentFamily.dogName || '我的狗狗';
+      document.getElementById('familyCode').textContent = currentFamilyId;
+      updateLastRecord();
+      subscribeRecords();
+      showLoading(false);
+    } else {
+      // Family deleted, reset
+      await updateDoc(doc(db, 'users', currentUser.uid), { familyId: null });
+      showLoading(false);
+      showFamilySetup();
+    }
+  } catch(e) {
+    console.error(e);
+    showLoading(false);
+    showFamilySetup();
+  }
+}
+
+function showFamilySetup() {
+  document.getElementById('familySetup').style.display = 'flex';
+  document.getElementById('appContent').style.display = 'none';
+}
+
+window.createFamily = async function() {
+  const dogName = document.getElementById('newDogName').value.trim();
+  if (!dogName) { showToast('❌ 請輸入狗狗名字'); return; }
+  try {
+    document.getElementById('createFamilyBtn').disabled = true;
+    const famRef = await addDoc(collection(db, 'families'), {
+      dogName,
+      createdBy: currentUser.uid,
+      createdAt: serverTimestamp(),
+      members: [{ uid: currentUser.uid, name: currentUser.displayName, email: currentUser.email, photoURL: currentUser.photoURL }]
+    });
+    await setDoc(doc(db, 'users', currentUser.uid), { familyId: famRef.id }, { merge: true });
+    await joinFamilyById(famRef.id);
+    showToast('✅ 家庭群組已建立！');
+  } catch(e) {
+    console.error(e);
+    showToast('❌ 建立失敗，請重試');
+    document.getElementById('createFamilyBtn').disabled = false;
+  }
+};
+
+window.joinFamily = async function() {
+  const code = document.getElementById('joinCode').value.trim();
+  if (!code) { showToast('❌ 請輸入邀請碼'); return; }
+  try {
+    document.getElementById('joinFamilyBtn').disabled = true;
+    const famRef = doc(db, 'families', code);
+    const famSnap = await getDoc(famRef);
+    if (!famSnap.exists()) { showToast('❌ 邀請碼無效'); document.getElementById('joinFamilyBtn').disabled = false; return; }
+    const famData = famSnap.data();
+    const members = famData.members || [];
+    if (!members.find(m => m.uid === currentUser.uid)) {
+      members.push({ uid: currentUser.uid, name: currentUser.displayName, email: currentUser.email, photoURL: currentUser.photoURL });
+      await updateDoc(famRef, { members });
+    }
+    await setDoc(doc(db, 'users', currentUser.uid), { familyId: code }, { merge: true });
+    await joinFamilyById(code);
+    showToast('✅ 成功加入家庭群組！');
+  } catch(e) {
+    console.error(e);
+    showToast('❌ 加入失敗，請重試');
+    document.getElementById('joinFamilyBtn').disabled = false;
+  }
+};
+
+// ══ Firestore Records ══
+function subscribeRecords() {
+  if (unsubscribeRecords) unsubscribeRecords();
+  const q = query(
+    collection(db, 'families', currentFamilyId, 'records'),
+    orderBy('timestamp', 'desc')
+  );
+  unsubscribeRecords = onSnapshot(q, snap => {
+    allRecords = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateLastRecord();
+    if (document.getElementById('page-report').classList.contains('active')) renderReport();
+    if (document.getElementById('page-history').classList.contains('active')) renderHistory();
+  });
+}
+
+async function saveRecord(count, method, note = '', customTime = null) {
+  const ts = customTime ? new Date(customTime) : new Date();
+  await addDoc(collection(db, 'families', currentFamilyId, 'records'), {
+    count,
+    method,
+    note,
+    timestamp: ts.toISOString(),
+    recordedBy: currentUser.uid,
+    recordedByName: currentUser.displayName,
+    recordedByPhoto: currentUser.photoURL || ''
+  });
+}
+
+window.deleteRecord = async function(id) {
+  if (!confirm('確定刪除此紀錄？')) return;
+  try {
+    await deleteDoc(doc(db, 'families', currentFamilyId, 'records', id));
+    showToast('🗑️ 已刪除');
+  } catch(e) { showToast('❌ 刪除失敗'); }
+};
+
+// ══ Timer ══
+window.startTimer = function() {
+  if (isRunning) return;
+  isRunning = true;
+  breathCount = 0;
+  timeLeft = 60;
+  updateBreathDisplay();
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('breathBtn').disabled = false;
+  document.getElementById('resetBtn').style.display = 'inline-flex';
+  document.getElementById('resultCard').style.display = 'none';
+  updateTimerDisplay();
+  updateRing();
+  timerInterval = setInterval(() => {
+    timeLeft--;
+    updateTimerDisplay();
+    updateRing();
+    if (timeLeft <= 0) finishTimer();
+  }, 1000);
+};
+
+function updateTimerDisplay() { document.getElementById('timerDisplay').textContent = timeLeft; }
+
+function updateRing() {
+  const offset = CIRCUMFERENCE * (timeLeft / 60);
+  document.getElementById('timerProgress').style.strokeDashoffset = offset;
+  document.getElementById('timerProgress').style.strokeDasharray = CIRCUMFERENCE;
+}
+
+window.countBreath = function(event) {
+  if (!isRunning) return;
+  breathCount++;
+  updateBreathDisplay();
+
+  // Vibration feedback
+  if (navigator.vibrate) navigator.vibrate(40);
+
+  // Ripple effect
+  const btn = document.getElementById('breathBtn');
+  const ripple = document.createElement('span');
+  ripple.className = 'ripple';
+  const size = btn.offsetWidth;
+  ripple.style.width = ripple.style.height = size + 'px';
+  ripple.style.left = '0px'; ripple.style.top = '0px';
+  btn.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 400);
+
+  // Ping ring
+  const ping = document.getElementById('breathPing');
+  ping.classList.remove('active');
+  void ping.offsetWidth; // reflow to restart animation
+  ping.classList.add('active');
+
+  // Count pulse
+  const el = document.getElementById('breathCount');
+  el.classList.add('pulse');
+  setTimeout(() => el.classList.remove('pulse'), 100);
+};
+
+function updateBreathDisplay() { document.getElementById('breathCount').textContent = breathCount; }
+
+let pendingBreathCount = 0;
+
+async function finishTimer() {
+  clearInterval(timerInterval);
+  isRunning = false;
+  document.getElementById('breathBtn').disabled = true;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('startBtn').textContent = '▶ 再次量度';
+  pendingBreathCount = breathCount;
+  // Show remarks modal before saving
+  document.getElementById('remarkCount').textContent = breathCount;
+  resetQuickRemarks();
+  document.getElementById('remarksModal').classList.add('open');
+}
+
+window.saveWithRemark = async function() {
+  const note = document.getElementById('remarkInput').value.trim();
+  document.getElementById('remarksModal').classList.remove('open');
+  try {
+    await saveRecord(pendingBreathCount, 'timer', note);
+    showResult(pendingBreathCount, note);
+    showToast('✅ 已儲存到雲端！');
+  } catch(e) { showToast('❌ 儲存失敗'); }
+};
+
+window.skipRemark = async function() {
+  document.getElementById('remarksModal').classList.remove('open');
+  try {
+    await saveRecord(pendingBreathCount, 'timer', '');
+    showResult(pendingBreathCount, '');
+    showToast('✅ 已儲存到雲端！');
+  } catch(e) { showToast('❌ 儲存失敗'); }
+};
+
+window.toggleQuickRemark = function(text, btn) {
+  btn.classList.toggle('selected');
+  rebuildRemarkInput();
+};
+
+function rebuildRemarkInput() {
+  const selected = Array.from(document.querySelectorAll('.quick-remark-btn.selected'))
+    .map(b => b.dataset.label);
+  document.getElementById('remarkInput').value = selected.join('、');
+}
+
+// Reset all quick remark buttons when modal opens
+function resetQuickRemarks() {
+  document.querySelectorAll('.quick-remark-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById('remarkInput').value = '';
+}
+
+window.resetTimer = function() {
+  clearInterval(timerInterval);
+  isRunning = false;
+  timeLeft = 60;
+  breathCount = 0;
+  updateTimerDisplay();
+  updateBreathDisplay();
+  updateRing();
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('startBtn').textContent = '▶ 開始量度';
+  document.getElementById('breathBtn').disabled = true;
+  document.getElementById('resetBtn').style.display = 'none';
+  document.getElementById('resultCard').style.display = 'none';
+};
+
+window.saveManual = async function() {
+  const count = parseInt(document.getElementById('manualCount').value);
+  const time = document.getElementById('manualTime').value;
+  const note = document.getElementById('manualNote').value.trim();
+  if (isNaN(count) || count < 0) { showToast('❌ 請輸入有效次數'); return; }
+  if (!time) { showToast('❌ 請選擇時間'); return; }
+  try {
+    await saveRecord(count, 'manual', note, time);
+    document.getElementById('manualCount').value = '';
+    document.getElementById('manualNote').value = '';
+    setManualTimeNow();
+    showResult(count, note);
+    showToast('✅ 已儲存到雲端！');
+  } catch(e) { showToast('❌ 儲存失敗'); }
+};
+
+function showResult(count, note='') {
+  const card = document.getElementById('resultCard');
+  card.style.display = 'block';
+  card.className = 'result-card';
+  if (count <= 12) {
+    card.classList.add('normal');
+    document.getElementById('resultTitle').textContent = `✅ ${count} 次/分 — 正常`;
+    document.getElementById('resultText').textContent = '靜息呼吸次數正常，繼續日常監察。';
+  } else if (count <= 15) {
+    card.classList.add('warn');
+    document.getElementById('resultTitle').textContent = `⚠️ ${count} 次/分 — 偏高`;
+    document.getElementById('resultText').textContent = '呼吸次數偏高，建議密切觀察並諮詢獸醫。';
+  } else {
+    card.classList.add('danger');
+    document.getElementById('resultTitle').textContent = `🚨 ${count} 次/分 — 過高！`;
+    document.getElementById('resultText').textContent = '呼吸次數過高，請盡快聯絡獸醫！';
+  }
+  const noteEl = document.getElementById('resultNote');
+  if (note) { noteEl.textContent = '📝 ' + note; noteEl.style.display = 'block'; }
+  else { noteEl.style.display = 'none'; }
+}
+
+function updateLastRecord() {
+  if (!allRecords.length) { document.getElementById('lastRecordText').textContent = '尚未有紀錄'; return; }
+  const last = allRecords[0];
+  const d = new Date(last.timestamp);
+  document.getElementById('lastRecordText').textContent =
+    `上次：${formatDateTime(d)} · ${last.count}次/分 · ${last.recordedByName || ''}`;
+}
+
+// ══ Report ══
+window.switchPeriod = function(p, btn) {
+  currentPeriod = p;
+  document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderReport();
+};
+
+function renderReport() {
+  const now = new Date();
+  let filtered, labels, chartData;
+
+  if (currentPeriod === 'day') {
+    const todayStr = now.toISOString().slice(0,10);
+    filtered = allRecords.filter(r => r.timestamp.slice(0,10) === todayStr);
+    const buckets = {};
+    for (let h=0;h<24;h++) buckets[h]=[];
+    filtered.forEach(r => { const h = new Date(r.timestamp).getHours(); buckets[h].push(r.count); });
+    labels = Object.keys(buckets).map(h=>h+'時');
+    chartData = Object.values(buckets).map(arr=>arr.length?Math.round(arr.reduce((a,b)=>a+b,0)/arr.length):null);
+    document.getElementById('chartTitle').textContent = '今日每小時平均';
+  } else if (currentPeriod === 'week') {
+    const days=[];
+    for(let i=6;i>=0;i--){const d=new Date(now);d.setDate(d.getDate()-i);days.push(d.toISOString().slice(0,10));}
+    filtered = allRecords.filter(r=>days.includes(r.timestamp.slice(0,10)));
+    labels = days.map(d=>{const dt=new Date(d);return(dt.getMonth()+1)+'/'+(dt.getDate());});
+    chartData = days.map(d=>{
+      const arr=allRecords.filter(r=>r.timestamp.slice(0,10)===d).map(r=>r.count);
+      return arr.length?Math.round(arr.reduce((a,b)=>a+b,0)/arr.length):null;
+    });
+    document.getElementById('chartTitle').textContent = '本週每日平均';
+  } else {
+    const days=[];
+    for(let i=29;i>=0;i--){const d=new Date(now);d.setDate(d.getDate()-i);days.push(d.toISOString().slice(0,10));}
+    filtered = allRecords.filter(r=>days.includes(r.timestamp.slice(0,10)));
+    labels = days.map((_,i)=>i%7===0?days[i].slice(5):'');
+    chartData = days.map(d=>{
+      const arr=allRecords.filter(r=>r.timestamp.slice(0,10)===d).map(r=>r.count);
+      return arr.length?Math.round(arr.reduce((a,b)=>a+b,0)/arr.length):null;
+    });
+    document.getElementById('chartTitle').textContent = '本月每日平均';
+  }
+
+  const counts = filtered.map(r=>r.count);
+  document.getElementById('sumCount').textContent = filtered.length||'—';
+  document.getElementById('sumAvg').textContent = counts.length?Math.round(counts.reduce((a,b)=>a+b,0)/counts.length):'—';
+  document.getElementById('sumMax').textContent = counts.length?Math.max(...counts):'—';
+  renderBarChart(chartData, labels);
+
+  const list = document.getElementById('reportRecordList');
+  const recent = [...filtered].slice(0,10);
+  list.innerHTML = recent.length ? recent.map(r=>recordHTML(r,false)).join('') :
+    '<div class="empty-state"><div class="empty-icon">📭</div><p>此時段沒有紀錄</p></div>';
+}
+
+function renderBarChart(data, labels) {
+  const nonNull = data.filter(v=>v!==null);
+  const max = nonNull.length?Math.max(...nonNull,15):15;
+  const refPct = (12/max)*100;
+  const html = data.map((v,i)=>{
+    const pct = v!==null?Math.round((v/max)*100):0;
+    return `<div class="bar-wrap">
+      <div class="bar-val">${v!==null?v:''}</div>
+      <div class="bar ${v!==null&&v>12?'danger-bar':''}" style="height:${pct}%"></div>
+      <div class="bar-lbl">${labels[i]}</div>
+    </div>`;
+  }).join('');
+  const chart = document.getElementById('barChart');
+  chart.innerHTML = html;
+  const wrap = chart.parentElement;
+  wrap.querySelectorAll('.ref-line,.ref-line-label').forEach(e=>e.remove());
+  const line = document.createElement('div');
+  line.className='ref-line'; line.style.bottom=refPct+'%';
+  const lbl = document.createElement('div');
+  lbl.className='ref-line-label'; lbl.style.bottom=refPct+'%'; lbl.textContent='12次警戒';
+  wrap.appendChild(line); wrap.appendChild(lbl);
+}
+
+// ══ History ══
+window.renderHistory = function() {
+  const filterDate = document.getElementById('filterDate').value;
+  const filterMember = document.getElementById('filterMember').value;
+  let filtered = [...allRecords];
+  if (filterDate) filtered = filtered.filter(r=>r.timestamp.slice(0,10)===filterDate);
+  if (filterMember) filtered = filtered.filter(r=>r.recordedBy===filterMember);
+  const list = document.getElementById('historyList');
+  list.innerHTML = filtered.length ? filtered.map(r=>recordHTML(r,true)).join('') :
+    '<div class="empty-state"><div class="empty-icon">📭</div><p>沒有符合的紀錄</p></div>';
+
+  // Populate member filter
+  const sel = document.getElementById('filterMember');
+  const currentVal = sel.value;
+  const members = currentFamily?.members||[];
+  sel.innerHTML = '<option value="">全部成員</option>' +
+    members.map(m=>`<option value="${m.uid}" ${m.uid===currentVal?'selected':''}>${m.name}</option>`).join('');
+};
+
+function recordHTML(r, showDelete=false) {
+  const d = new Date(r.timestamp);
+  const badge = r.count<=12?'ok':r.count<=15?'warn':'bad';
+  const del = showDelete?`<button class="rec-del" onclick="deleteRecord('${r.id}')" title="刪除">🗑️</button>`:'';
+  const photo = r.recordedByPhoto?`<img src="${r.recordedByPhoto}" class="member-avatar" alt="">`:'<div class="member-avatar-placeholder">👤</div>';
+  return `<div class="record-item">
+    <div class="rec-badge ${badge}">${r.count}</div>
+    <div class="rec-info">
+      <div class="rec-time">${formatDateTime(d)}</div>
+      <div class="rec-meta">${r.method==='timer'?'⏱ 計時器':'✍️ 手動'} · ${statusText(r.count)}</div>
+      <div class="rec-by">${photo}<span>${r.recordedByName||'成員'}</span></div>
+      ${r.note?`<div class="rec-note">${r.note}</div>`:''}
+    </div>
+    ${del}
+  </div>`;
+}
+
+function statusText(c){return c<=12?'✅ 正常':c<=15?'⚠️ 偏高':'🚨 過高';}
+
+// ══ Export ══
+window.exportCSV = function() {
+  const from = document.getElementById('exportFrom').value;
+  const to = document.getElementById('exportTo').value;
+  let records = [...allRecords];
+  if (from) records = records.filter(r=>r.timestamp.slice(0,10)>=from);
+  if (to) records = records.filter(r=>r.timestamp.slice(0,10)<=to);
+  const dogName = currentFamily?.dogName||'我的狗狗';
+  const header = '日期,時間,呼吸次數（次/分）,狀態,量度方法,記錄者,備註\n';
+  const rows = records.map(r=>{
+    const d=new Date(r.timestamp);
+    const date=d.toLocaleDateString('zh-HK');
+    const time=d.toLocaleTimeString('zh-HK',{hour:'2-digit',minute:'2-digit'});
+    const status=r.count<=12?'正常':r.count<=15?'偏高':'過高';
+    const method=r.method==='timer'?'計時器':'手動輸入';
+    return `${date},${time},${r.count},${status},${method},"${r.recordedByName||''}","${r.note||''}"`;
+  }).join('\n');
+  const BOM='\uFEFF';
+  const blob=new Blob([BOM+header+rows],{type:'text/csv;charset=utf-8;'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download=`${dogName}_呼吸紀錄.csv`; a.click();
+  URL.revokeObjectURL(url);
+  showToast('✅ CSV 已下載！');
+};
+
+window.exportJSON = function() {
+  const from = document.getElementById('exportFrom').value;
+  const to = document.getElementById('exportTo').value;
+  let records = [...allRecords];
+  if (from) records = records.filter(r=>r.timestamp.slice(0,10)>=from);
+  if (to) records = records.filter(r=>r.timestamp.slice(0,10)<=to);
+  const data={dogName:currentFamily?.dogName,familyId:currentFamilyId,exportDate:new Date().toISOString(),records};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download='呼吸紀錄.json'; a.click();
+  URL.revokeObjectURL(url);
+  showToast('✅ JSON 已下載！');
+};
+
+window.copyFamilyCode = function() {
+  navigator.clipboard.writeText(currentFamilyId).then(()=>showToast('✅ 邀請碼已複製！'));
+};
+
+// ══ Members ══
+window.showMembers = function() {
+  const members = currentFamily?.members||[];
+  const html = members.map(m=>`
+    <div class="member-row">
+      <img src="${m.photoURL||''}" class="member-avatar-lg" onerror="this.style.display='none'" alt="">
+      <div>
+        <div style="font-weight:800;font-size:14px">${m.name}</div>
+        <div style="font-size:12px;color:var(--text-muted)">${m.email}</div>
+      </div>
+    </div>`).join('');
+  document.getElementById('membersList').innerHTML = html;
+  document.getElementById('membersModal').classList.add('open');
+};
+window.closeMembers = function() { document.getElementById('membersModal').classList.remove('open'); };
+
+// ══ Tabs ══
+window.switchTab = function(tab) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('page-'+tab).classList.add('active');
+  document.querySelector('[data-tab='+tab+']').classList.add('active');
+  if (tab==='report') renderReport();
+  if (tab==='history') renderHistory();
+};
+
+// ══ Utils ══
+function formatDateTime(d){
+  return d.toLocaleDateString('zh-HK',{month:'short',day:'numeric'})+' '+
+    d.toLocaleTimeString('zh-HK',{hour:'2-digit',minute:'2-digit'});
+}
+
+function showToast(msg) {
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'),2500);
+}
+
+function showLoading(show) {
+  document.getElementById('loadingScreen').style.display = show?'flex':'none';
+}
+
+function setManualTimeNow() {
+  const now=new Date();
+  const local=new Date(now-now.getTimezoneOffset()*60000).toISOString().slice(0,16);
+  document.getElementById('manualTime').value=local;
+}
+
+function setDefaultExportDates() {
+  const now=new Date();
+  document.getElementById('exportTo').value=now.toISOString().slice(0,10);
+  now.setDate(now.getDate()-30);
+  document.getElementById('exportFrom').value=now.toISOString().slice(0,10);
+}
+
+window.addEventListener('load',()=>{setManualTimeNow();setDefaultExportDates();});
+
+document.addEventListener('DOMContentLoaded', () => {
+  const modal = document.getElementById('membersModal');
+  if (modal) modal.addEventListener('click', function(e){ if(e.target===this) closeMembers(); });
+  const rModal = document.getElementById('remarksModal');
+  if (rModal) rModal.addEventListener('click', function(e){ if(e.target===this) skipRemark(); });
+});
+</script>
+
+<style>
+:root {
+  --bg: #fdf6ee;
+  --surface: #fff9f3;
+  --card: #ffffff;
+  --primary: #e07b4a;
+  --primary-light: #f5a47a;
+  --primary-pale: #fdeadc;
+  --accent: #5b8c7a;
+  --accent-light: #8abfad;
+  --accent-pale: #e0f0eb;
+  --danger: #d95f5f;
+  --danger-pale: #fde8e8;
+  --warn: #e0a93a;
+  --warn-pale: #fdf3dc;
+  --text: #2e2118;
+  --text-muted: #9a8070;
+  --border: #ecddd2;
+  --shadow: 0 4px 24px rgba(100,60,30,0.08);
+  --radius: 20px;
+  --radius-sm: 12px;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:'Nunito',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;}
+
+/* Loading */
+#loadingScreen {
+  position:fixed;inset:0;background:var(--bg);
+  display:flex;align-items:center;justify-content:center;
+  flex-direction:column;gap:16px;z-index:9999;
+}
+.loading-paw{font-size:48px;animation:bounce 1s infinite;}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+.loading-text{font-family:'Fraunces',serif;font-size:18px;color:var(--text-muted);}
+
+/* Login */
+#loginScreen {
+  display:flex;align-items:center;justify-content:center;
+  min-height:100vh;background:var(--bg);
+  flex-direction:column;gap:0;padding:24px;
+}
+.login-card {
+  background:var(--card);border-radius:var(--radius);
+  border:2px solid var(--border);padding:40px 32px;
+  text-align:center;max-width:380px;width:100%;
+  box-shadow:var(--shadow);
+}
+.login-paw{font-size:56px;margin-bottom:16px;}
+.login-card h1{font-family:'Fraunces',serif;font-size:26px;font-weight:700;color:var(--primary);margin-bottom:6px;}
+.login-card p{font-size:14px;color:var(--text-muted);margin-bottom:28px;line-height:1.6;}
+.btn-google {
+  width:100%;padding:14px;border-radius:50px;
+  background:var(--primary);color:#fff;border:none;
+  font-family:'Nunito',sans-serif;font-size:16px;font-weight:800;
+  cursor:pointer;transition:.2s;box-shadow:0 4px 14px rgba(224,123,74,.35);
+}
+.btn-google:hover{background:#d06a38;}
+.btn-google:disabled{opacity:.5;cursor:not-allowed;}
+
+/* Family Setup */
+#familySetup {
+  display:none;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px;flex-direction:column;
+}
+.setup-card {
+  background:var(--card);border-radius:var(--radius);
+  border:2px solid var(--border);padding:32px 28px;
+  max-width:420px;width:100%;box-shadow:var(--shadow);
+}
+.setup-card h2{font-family:'Fraunces',serif;font-size:22px;font-weight:700;margin-bottom:6px;}
+.setup-card p{font-size:13px;color:var(--text-muted);margin-bottom:20px;}
+.divider{text-align:center;color:var(--text-muted);font-size:12px;font-weight:700;margin:16px 0;position:relative;}
+.divider::before,.divider::after{content:'';position:absolute;top:50%;width:40%;height:1px;background:var(--border);}
+.divider::before{left:0;}.divider::after{right:0;}
+
+/* Header */
+header {
+  background:var(--card);border-bottom:2px solid var(--border);
+  padding:14px 20px;display:flex;align-items:center;gap:12px;
+  position:sticky;top:0;z-index:100;
+  box-shadow:0 2px 12px rgba(100,60,30,0.06);
+}
+.logo-paw{font-size:28px;line-height:1;}
+.header-title{flex:1;}
+.header-title h1{font-family:'Fraunces',serif;font-size:18px;font-weight:700;color:var(--primary);line-height:1.1;}
+.header-title p{font-size:11px;color:var(--text-muted);font-weight:600;}
+.header-right{display:flex;align-items:center;gap:8px;}
+.user-avatar{width:32px;height:32px;border-radius:50%;border:2px solid var(--border);cursor:pointer;}
+.icon-btn{background:none;border:none;cursor:pointer;font-size:18px;padding:4px;border-radius:8px;transition:.2s;}
+.icon-btn:hover{background:var(--primary-pale);}
+
+/* Tabs */
+.tabs{display:flex;background:var(--card);border-bottom:2px solid var(--border);overflow-x:auto;scrollbar-width:none;}
+.tabs::-webkit-scrollbar{display:none;}
+.tab-btn{flex:1;min-width:72px;padding:12px 8px;border:none;background:transparent;font-family:'Nunito',sans-serif;font-size:12px;font-weight:700;color:var(--text-muted);cursor:pointer;border-bottom:3px solid transparent;transition:.2s;display:flex;flex-direction:column;align-items:center;gap:2px;}
+.tab-btn .tab-icon{font-size:16px;}
+.tab-btn.active{color:var(--primary);border-bottom-color:var(--primary);}
+.tab-btn:hover:not(.active){color:var(--text);background:var(--primary-pale);}
+
+/* Pages */
+.page{display:none;padding:16px;max-width:680px;margin:0 auto;}
+.page.active{display:block;}
+.section-title{font-family:'Fraunces',serif;font-size:18px;font-weight:700;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+
+/* Family info bar */
+.family-bar {
+  background:var(--accent-pale);border-radius:var(--radius-sm);
+  border:2px solid var(--accent-light);padding:10px 16px;
+  margin-bottom:14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+}
+.family-bar p{font-size:12px;color:var(--accent);font-weight:700;flex:1;}
+.family-code{font-family:monospace;font-size:13px;font-weight:800;background:var(--card);padding:3px 10px;border-radius:6px;border:1px solid var(--accent-light);}
+.btn-copy{background:none;border:none;cursor:pointer;font-size:14px;padding:2px 6px;border-radius:6px;transition:.2s;}
+.btn-copy:hover{background:var(--accent-light);}
+
+/* Status bar */
+.status-bar{background:var(--card);border-radius:var(--radius);padding:14px 18px;margin-bottom:14px;border:2px solid var(--border);display:flex;align-items:center;gap:10px;}
+.status-dot{width:10px;height:10px;border-radius:50%;background:var(--accent);flex-shrink:0;}
+.status-bar p{font-size:13px;color:var(--text-muted);font-weight:600;}
+.last-record{font-size:11px;color:var(--text-muted);margin-top:2px;}
+
+/* Timer */
+.timer-card{background:var(--card);border-radius:var(--radius);border:2px solid var(--border);padding:24px;text-align:center;box-shadow:var(--shadow);margin-bottom:14px;}
+.timer-ring-wrap{position:relative;display:inline-flex;align-items:center;justify-content:center;margin-bottom:18px;}
+.timer-ring{width:160px;height:160px;transform:rotate(-90deg);}
+.timer-ring circle{fill:none;stroke-width:10;stroke-linecap:round;}
+.timer-ring .bg{stroke:var(--border);}
+.timer-ring .progress{stroke:var(--primary);stroke-dasharray:1005;stroke-dashoffset:0;transition:stroke-dashoffset 1s linear;}
+.timer-center{position:absolute;display:flex;flex-direction:column;align-items:center;}
+.timer-display{font-family:'Fraunces',serif;font-size:44px;font-weight:700;color:var(--primary);line-height:1;}
+.timer-label{font-size:11px;color:var(--text-muted);font-weight:700;letter-spacing:1px;margin-top:4px;}
+.breath-counter{display:flex;align-items:center;justify-content:center;gap:24px;margin-bottom:20px;}
+.breath-count{font-family:'Fraunces',serif;font-size:56px;font-weight:700;color:var(--accent);line-height:1;min-width:70px;text-align:center;transition:transform .1s;}
+.breath-count.pulse{transform:scale(1.15);}
+.breath-count-label{font-size:12px;color:var(--text-muted);font-weight:700;}
+.btn-breath-wrap{position:relative;display:flex;align-items:center;justify-content:center;}
+.btn-breath{
+  width:110px;height:110px;border-radius:50%;
+  background:var(--accent);border:none;cursor:pointer;
+  font-size:40px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 28px rgba(91,140,122,.4);
+  transition:.15s;-webkit-tap-highlight-color:transparent;
+  position:relative;overflow:hidden;
+}
+.btn-breath:active{transform:scale(.91);box-shadow:0 3px 10px rgba(91,140,122,.3);}
+.btn-breath:disabled{opacity:.35;cursor:not-allowed;}
+.btn-breath .ripple{
+  position:absolute;border-radius:50%;
+  background:rgba(255,255,255,.4);
+  transform:scale(0);animation:ripple .4s linear;
+  pointer-events:none;
+}
+@keyframes ripple{to{transform:scale(3);opacity:0;}}
+.breath-ping{
+  position:absolute;width:110px;height:110px;border-radius:50%;
+  background:var(--accent);opacity:0;
+  animation:none;pointer-events:none;
+}
+.breath-ping.active{animation:ping .4s ease-out;}
+@keyframes ping{0%{transform:scale(1);opacity:.5;}100%{transform:scale(1.6);opacity:0;}}
+.controls{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;}
+.btn{padding:11px 24px;border-radius:50px;border:none;font-family:'Nunito',sans-serif;font-size:14px;font-weight:800;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:6px;}
+.btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 14px rgba(224,123,74,.35);}
+.btn-primary:hover{background:#d06a38;}
+.btn-secondary{background:var(--surface);color:var(--text);border:2px solid var(--border);}
+.btn-secondary:hover{background:var(--border);}
+.btn-danger{background:var(--danger);color:#fff;}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+
+/* Manual */
+.manual-card{background:var(--card);border-radius:var(--radius);border:2px solid var(--border);padding:18px 20px;margin-bottom:14px;}
+.manual-card h3{font-size:14px;font-weight:800;margin-bottom:10px;color:var(--text-muted);}
+.manual-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.input-field{padding:9px 14px;border-radius:var(--radius-sm);border:2px solid var(--border);font-family:'Nunito',sans-serif;font-size:14px;font-weight:700;background:var(--bg);color:var(--text);width:80px;text-align:center;}
+.input-field:focus{outline:none;border-color:var(--primary);}
+.input-field-wide{width:auto;flex:1;min-width:130px;text-align:left;}
+select.input-field{cursor:pointer;}
+
+/* Result */
+.result-card{border-radius:var(--radius);border:2px solid;padding:14px 18px;margin-bottom:14px;display:none;animation:fadeIn .3s;}
+.result-card.normal{background:var(--accent-pale);border-color:var(--accent-light);}
+.result-card.warn{background:var(--warn-pale);border-color:var(--warn);}
+.result-card.danger{background:var(--danger-pale);border-color:var(--danger);}
+.result-card h3{font-size:15px;font-weight:800;margin-bottom:3px;}
+.result-card.normal h3{color:var(--accent);}
+.result-card.warn h3{color:var(--warn);}
+.result-card.danger h3{color:var(--danger);}
+.result-card p{font-size:13px;color:var(--text-muted);}
+
+/* Report */
+.period-tabs{display:flex;gap:8px;margin-bottom:16px;}
+.period-btn{flex:1;padding:9px;border-radius:var(--radius-sm);border:2px solid var(--border);background:var(--card);font-family:'Nunito',sans-serif;font-size:13px;font-weight:800;color:var(--text-muted);cursor:pointer;transition:.2s;}
+.period-btn.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.summary-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:16px;}
+.summary-item{background:var(--card);border-radius:var(--radius-sm);border:2px solid var(--border);padding:12px 10px;text-align:center;}
+.summary-val{font-family:'Fraunces',serif;font-size:24px;font-weight:700;color:var(--primary);line-height:1;}
+.summary-lbl{font-size:10px;color:var(--text-muted);font-weight:700;margin-top:4px;}
+.chart-card{background:var(--card);border-radius:var(--radius);border:2px solid var(--border);padding:18px;margin-bottom:14px;overflow:hidden;}
+.chart-title{font-size:12px;font-weight:800;color:var(--text-muted);margin-bottom:12px;}
+.bar-chart{display:flex;align-items:flex-end;gap:3px;height:110px;}
+.bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;height:100%;justify-content:flex-end;}
+.bar{width:100%;border-radius:5px 5px 0 0;background:var(--primary-light);min-height:4px;transition:height .4s cubic-bezier(.4,0,.2,1);}
+.bar:hover{background:var(--primary);}
+.bar.danger-bar{background:#f5a5a5;}
+.bar.danger-bar:hover{background:var(--danger);}
+.bar-lbl{font-size:9px;color:var(--text-muted);font-weight:700;white-space:nowrap;}
+.bar-val{font-size:9px;color:var(--text-muted);font-weight:700;}
+.bar-chart-wrap{position:relative;}
+.ref-line{position:absolute;width:100%;border-top:2px dashed var(--danger);opacity:.5;pointer-events:none;}
+.ref-line-label{position:absolute;right:0;font-size:9px;color:var(--danger);font-weight:800;transform:translateY(-11px);}
+
+/* Records */
+.record-list{display:flex;flex-direction:column;gap:8px;}
+.record-item{background:var(--card);border-radius:var(--radius-sm);border:2px solid var(--border);padding:11px 14px;display:flex;align-items:center;gap:10px;}
+.rec-badge{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-size:15px;font-weight:700;flex-shrink:0;}
+.rec-badge.ok{background:var(--accent-pale);color:var(--accent);}
+.rec-badge.warn{background:var(--warn-pale);color:var(--warn);}
+.rec-badge.bad{background:var(--danger-pale);color:var(--danger);}
+.rec-info{flex:1;}
+.rec-time{font-size:13px;font-weight:800;color:var(--text);}
+.rec-meta{font-size:11px;color:var(--text-muted);font-weight:600;}
+.rec-by{display:flex;align-items:center;gap:5px;margin-top:3px;}
+.rec-by span{font-size:11px;color:var(--accent);font-weight:700;}
+.member-avatar{width:18px;height:18px;border-radius:50%;border:1px solid var(--border);}
+.member-avatar-placeholder{width:18px;height:18px;border-radius:50%;background:var(--border);display:flex;align-items:center;justify-content:center;font-size:10px;}
+.rec-note{font-size:11px;color:var(--accent);font-style:italic;margin-top:2px;}
+.rec-del{background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:15px;padding:4px;border-radius:6px;transition:.2s;}
+.rec-del:hover{color:var(--danger);background:var(--danger-pale);}
+
+/* Export */
+.export-card{background:var(--card);border-radius:var(--radius);border:2px solid var(--border);padding:18px 20px;margin-bottom:14px;}
+.export-card h3{font-size:14px;font-weight:800;margin-bottom:12px;}
+.export-row{display:flex;gap:8px;flex-wrap:wrap;}
+.btn-export{padding:10px 18px;border-radius:var(--radius-sm);border:2px solid var(--border);background:var(--surface);font-family:'Nunito',sans-serif;font-size:13px;font-weight:800;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:6px;}
+.btn-export:hover{background:var(--accent-pale);border-color:var(--accent-light);color:var(--accent);}
+.btn-export.excel:hover{background:#e8f5e9;border-color:#66bb6a;color:#388e3c;}
+
+/* Info */
+.info-card{background:var(--card);border-radius:var(--radius);border:2px solid var(--border);padding:18px 20px;margin-bottom:12px;}
+.info-card h3{font-size:14px;font-weight:800;margin-bottom:8px;display:flex;align-items:center;gap:6px;}
+.info-card p{font-size:13px;color:var(--text-muted);line-height:1.7;}
+.range-table{width:100%;border-collapse:collapse;margin-top:8px;font-size:12px;}
+.range-table th{padding:7px 8px;text-align:left;font-weight:800;color:var(--text-muted);border-bottom:2px solid var(--border);font-size:10px;letter-spacing:.5px;}
+.range-table td{padding:7px 8px;border-bottom:1px solid var(--border);font-weight:600;}
+.tag{display:inline-block;padding:2px 8px;border-radius:50px;font-size:11px;font-weight:800;}
+.tag.ok{background:var(--accent-pale);color:var(--accent);}
+.tag.warn{background:var(--warn-pale);color:var(--warn);}
+.tag.bad{background:var(--danger-pale);color:var(--danger);}
+
+/* Members Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:999;}
+.modal-overlay.open{display:flex;}
+.quick-remark-btn {
+  padding: 7px 13px;
+  border-radius: 50px;
+  border: 2px solid var(--border);
+  background: var(--surface);
+  font-family: 'Nunito', sans-serif;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: .15s;
+  color: var(--text);
+}
+.quick-remark-btn:hover { background: var(--primary-pale); border-color: var(--primary-light); color: var(--primary); }
+.quick-remark-btn.selected { background: var(--primary); border-color: var(--primary); color: #fff; }
+.modal{background:var(--card);border-radius:var(--radius);padding:24px;width:90%;max-width:360px;box-shadow:0 20px 60px rgba(0,0,0,.2);}
+.modal h2{font-family:'Fraunces',serif;font-size:20px;font-weight:700;margin-bottom:16px;}
+.member-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border);}
+.member-avatar-lg{width:40px;height:40px;border-radius:50%;border:2px solid var(--border);}
+.modal-footer{display:flex;gap:10px;margin-top:16px;}
+
+/* Toast */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#2e2118;color:#fff;padding:11px 22px;border-radius:50px;font-size:13px;font-weight:700;z-index:9999;display:none;}
+.toast.show{display:block;animation:slideUp .3s;}
+
+.empty-state{text-align:center;padding:36px 20px;color:var(--text-muted);}
+.empty-state .empty-icon{font-size:44px;margin-bottom:10px;}
+.empty-state p{font-size:14px;font-weight:600;}
+
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes slideUp{from{opacity:0;transform:translate(-50%,16px)}to{opacity:1;transform:translate(-50%,0)}}
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:var(--bg);}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px;}
+</style>
+</head>
+<body>
+
+<!-- Loading -->
+<div id="loadingScreen">
+  <div class="loading-paw">🐾</div>
+  <div class="loading-text">載入中...</div>
+</div>
+
+<!-- Login -->
+<div id="loginScreen" style="display:none;">
+  <div class="login-card">
+    <div class="login-paw">🐾</div>
+    <h1>毛孩呼吸守護</h1>
+    <p>心臟病犬隻靜息呼吸監察<br>家庭共用 · 雲端同步 · 多裝置</p>
+    <button class="btn-google" id="loginBtn" onclick="loginWithGoogle()">🔑 用 Google 帳號登入</button>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="mainApp" style="display:none">
+
+  <!-- Family Setup -->
+  <div id="familySetup" style="display:none">
+    <div class="setup-card">
+      <h2>🏠 設置家庭群組</h2>
+      <p>建立群組或加入現有群組，讓家人一齊記錄</p>
+
+      <div style="margin-bottom:16px">
+        <label style="font-size:13px;font-weight:800;color:var(--text-muted);display:block;margin-bottom:8px">🐾 建立新群組</label>
+        <input type="text" class="input-field input-field-wide" id="newDogName" placeholder="輸入狗狗名字" style="width:100%;margin-bottom:10px">
+        <button class="btn btn-primary" id="createFamilyBtn" onclick="createFamily()" style="width:100%;justify-content:center">建立群組</button>
+      </div>
+
+      <div class="divider">或</div>
+
+      <div>
+        <label style="font-size:13px;font-weight:800;color:var(--text-muted);display:block;margin-bottom:8px">📨 加入現有群組</label>
+        <input type="text" class="input-field input-field-wide" id="joinCode" placeholder="輸入邀請碼" style="width:100%;margin-bottom:10px;font-family:monospace">
+        <button class="btn btn-secondary" id="joinFamilyBtn" onclick="joinFamily()" style="width:100%;justify-content:center">加入群組</button>
+      </div>
+
+      <div style="margin-top:16px;text-align:right">
+        <button class="btn" style="font-size:12px;color:var(--text-muted);background:none;padding:6px" onclick="logoutUser()">登出</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- App Content -->
+  <div id="appContent" style="display:none">
+
+    <header>
+      <div class="logo-paw">🐾</div>
+      <div class="header-title">
+        <h1 id="dogNameDisplay">毛孩呼吸守護</h1>
+        <p>家庭雲端版</p>
+      </div>
+      <div class="header-right">
+        <button class="icon-btn" onclick="showMembers()" title="家庭成員">👨‍👩‍👧</button>
+        <img id="userAvatar" class="user-avatar" src="" alt="" onclick="logoutUser()" title="登出">
+      </div>
+    </header>
+
+    <div class="tabs">
+      <button class="tab-btn active" onclick="switchTab('record')" data-tab="record"><span class="tab-icon">⏱️</span>量度</button>
+      <button class="tab-btn" onclick="switchTab('report')" data-tab="report"><span class="tab-icon">📊</span>報告</button>
+      <button class="tab-btn" onclick="switchTab('history')" data-tab="history"><span class="tab-icon">📋</span>紀錄</button>
+      <button class="tab-btn" onclick="switchTab('export')" data-tab="export"><span class="tab-icon">📤</span>匯出</button>
+      <button class="tab-btn" onclick="switchTab('info')" data-tab="info"><span class="tab-icon">ℹ️</span>資訊</button>
+    </div>
+
+    <!-- Record Page -->
+    <div class="page active" id="page-record">
+      <div class="family-bar">
+        <p>🏠 邀請碼：<span class="family-code" id="familyCode">—</span></p>
+        <button class="btn-copy" onclick="copyFamilyCode()" title="複製邀請碼">📋</button>
+        <span id="userName" style="font-size:11px;color:var(--accent);font-weight:700"></span>
+      </div>
+
+      <div class="status-bar">
+        <div class="status-dot"></div>
+        <div>
+          <p>🌙 靜息呼吸次數監察中</p>
+          <p class="last-record" id="lastRecordText">載入中...</p>
+        </div>
+      </div>
+
+      <div class="timer-card">
+        <div class="timer-ring-wrap">
+          <svg class="timer-ring" viewBox="0 0 160 160">
+            <circle class="bg" cx="80" cy="80" r="70"/>
+            <circle class="progress" id="timerProgress" cx="80" cy="80" r="70"/>
+          </svg>
+          <div class="timer-center">
+            <div class="timer-display" id="timerDisplay">60</div>
+            <div class="timer-label">秒</div>
+          </div>
+        </div>
+
+        <div class="breath-counter">
+          <div><div class="breath-count-label">呼吸次數</div></div>
+          <div class="breath-count" id="breathCount">0</div>
+          <div>
+            <div class="btn-breath-wrap">
+              <div class="breath-ping" id="breathPing"></div>
+              <button class="btn-breath" id="breathBtn" onclick="countBreath()" disabled>🫁</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button class="btn btn-primary" id="startBtn" onclick="startTimer()">▶ 開始量度</button>
+          <button class="btn btn-secondary" id="resetBtn" onclick="resetTimer()" style="display:none">↺ 重置</button>
+        </div>
+      </div>
+
+      <div class="result-card" id="resultCard">
+        <h3 id="resultTitle"></h3>
+        <p id="resultText"></p>
+        <p id="resultNote" style="display:none;margin-top:6px;font-size:13px;font-style:italic;opacity:.8"></p>
+      </div>
+
+      <div class="manual-card">
+        <h3>✍️ 手動輸入紀錄</h3>
+        <div class="manual-row">
+          <input type="number" class="input-field" id="manualCount" placeholder="次數" min="0" max="200">
+          <input type="datetime-local" class="input-field input-field-wide" id="manualTime">
+          <input type="text" class="input-field input-field-wide" id="manualNote" placeholder="備註（可選）">
+          <button class="btn btn-secondary" onclick="saveManual()">💾 儲存</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Report Page -->
+    <div class="page" id="page-report">
+      <div class="period-tabs">
+        <button class="period-btn active" onclick="switchPeriod('day',this)">今日</button>
+        <button class="period-btn" onclick="switchPeriod('week',this)">本週</button>
+        <button class="period-btn" onclick="switchPeriod('month',this)">本月</button>
+      </div>
+      <div class="summary-grid">
+        <div class="summary-item"><div class="summary-val" id="sumCount">—</div><div class="summary-lbl">量度次數</div></div>
+        <div class="summary-item"><div class="summary-val" id="sumAvg">—</div><div class="summary-lbl">平均次/分</div></div>
+        <div class="summary-item"><div class="summary-val" id="sumMax">—</div><div class="summary-lbl">最高次/分</div></div>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title" id="chartTitle">呼吸趨勢</div>
+        <div class="bar-chart-wrap" style="position:relative">
+          <div class="bar-chart" id="barChart"></div>
+        </div>
+      </div>
+      <div class="record-list" id="reportRecordList"></div>
+    </div>
+
+    <!-- History Page -->
+    <div class="page" id="page-history">
+      <h2 class="section-title">📋 所有紀錄</h2>
+      <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
+        <input type="date" class="input-field input-field-wide" id="filterDate" onchange="renderHistory()">
+        <select class="input-field input-field-wide" id="filterMember" onchange="renderHistory()">
+          <option value="">全部成員</option>
+        </select>
+        <button class="btn btn-secondary" style="font-size:13px" onclick="document.getElementById('filterDate').value='';document.getElementById('filterMember').value='';renderHistory()">清除</button>
+      </div>
+      <div class="record-list" id="historyList"></div>
+    </div>
+
+    <!-- Export Page -->
+    <div class="page" id="page-export">
+      <h2 class="section-title">📤 匯出資料</h2>
+      <div class="export-card">
+        <h3>📅 選擇範圍</h3>
+        <div class="manual-row" style="margin-bottom:12px">
+          <label style="font-size:12px;font-weight:700;color:var(--text-muted)">由</label>
+          <input type="date" class="input-field input-field-wide" id="exportFrom">
+          <label style="font-size:12px;font-weight:700;color:var(--text-muted)">至</label>
+          <input type="date" class="input-field input-field-wide" id="exportTo">
+        </div>
+        <div class="export-row">
+          <button class="btn-export excel" onclick="exportCSV()">📊 CSV（Excel / Google Sheets）</button>
+          <button class="btn-export" onclick="exportJSON()">🗂️ JSON</button>
+        </div>
+      </div>
+      <div class="info-card">
+        <h3>💡 匯入 Google Sheets</h3>
+        <p>下載 CSV → Google Sheets「檔案」→「匯入」→ 上傳 CSV → 以逗號分隔 → 完成</p>
+      </div>
+      <div class="info-card">
+        <h3>💡 匯入 Excel</h3>
+        <p>直接用 Excel 開啟 CSV，或「資料」→「從文字/CSV 匯入」</p>
+      </div>
+    </div>
+
+    <!-- Info Page -->
+    <div class="page" id="page-info">
+      <h2 class="section-title">ℹ️ 參考資訊</h2>
+      <div class="info-card">
+        <h3>🫀 靜息呼吸次數</h3>
+        <p>狗狗完全放鬆或睡眠時每分鐘的呼吸次數。心臟病犬隻每日監察，可及早發現心臟衰竭徵兆。</p>
+      </div>
+      <div class="info-card">
+        <h3>📏 正常範圍</h3>
+        <table class="range-table">
+          <tr><th>次數（次/分）</th><th>狀態</th><th>建議</th></tr>
+          <tr><td>≤ 12</td><td><span class="tag ok">✅ 正常</span></td><td>繼續日常監察</td></tr>
+          <tr><td>13–15</td><td><span class="tag warn">⚠️ 偏高</span></td><td>密切觀察，諮詢獸醫</td></tr>
+          <tr><td>> 15</td><td><span class="tag bad">🚨 過高</span></td><td>盡快聯絡獸醫</td></tr>
+        </table>
+        <p style="margin-top:8px;font-size:11px">⚠️ 實際範圍請遵照獸醫指示</p>
+      </div>
+      <div class="info-card">
+        <h3>📝 量度貼士</h3>
+        <p>• 狗狗<strong>睡眠或靜躺</strong>時量度<br>• 胸部一起一伏＝一次呼吸<br>• 每日建議同一時間量度<br>• 連續三次 > 12 次應聯絡獸醫<br>• 出現咳嗽或呼吸困難立即求醫</p>
+      </div>
+      <div class="info-card">
+        <h3>☁️ 雲端資料</h3>
+        <p>資料儲存於 Firebase（Google 雲端），加密安全。建議定期匯出 CSV 作備份。</p>
+      </div>
+    </div>
+
+  </div><!-- /appContent -->
+</div><!-- /mainApp -->
+
+<!-- Remarks Modal -->
+<div class="modal-overlay" id="remarksModal">
+  <div class="modal">
+    <h2>📝 加入備註</h2>
+    <div style="background:var(--primary-pale);border-radius:var(--radius-sm);padding:12px 16px;margin-bottom:16px;text-align:center">
+      <div style="font-family:'Fraunces',serif;font-size:36px;font-weight:700;color:var(--primary)" id="remarkCount">0</div>
+      <div style="font-size:12px;color:var(--text-muted);font-weight:700">次/分</div>
+    </div>
+    <p style="font-size:13px;color:var(--text-muted);margin-bottom:10px;font-weight:600">快捷備註：</p>
+    <div style="display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px">
+      <button class="quick-remark-btn" data-label="熟睡中" onclick="toggleQuickRemark('熟睡中', this)">😴 熟睡中</button>
+      <button class="quick-remark-btn" data-label="呼吸平穩" onclick="toggleQuickRemark('呼吸平穩', this)">✅ 呼吸平穩</button>
+      <button class="quick-remark-btn" data-label="發夢中" onclick="toggleQuickRemark('發夢中', this)">💭 發夢中</button>
+      <button class="quick-remark-btn" data-label="剛出完街" onclick="toggleQuickRemark('剛出完街', this)">🚶 剛出完街</button>
+      <button class="quick-remark-btn" data-label="靜躺休息" onclick="toggleQuickRemark('靜躺休息', this)">🛋️ 靜躺休息</button>
+      <button class="quick-remark-btn" data-label="進食後" onclick="toggleQuickRemark('進食後', this)">🍖 進食後</button>
+      <button class="quick-remark-btn" data-label="有輕微咳嗽" onclick="toggleQuickRemark('有輕微咳嗽', this)">😮‍💨 有輕微咳嗽</button>
+      <button class="quick-remark-btn" data-label="呼吸略急促" onclick="toggleQuickRemark('呼吸略急促', this)">⚠️ 呼吸略急促</button>
+    </div>
+    <textarea id="remarkInput" class="input-field input-field-wide"
+      placeholder="或自由輸入備註..."
+      style="width:100%;height:70px;resize:none;line-height:1.5;padding:10px 14px;text-align:left"></textarea>
+    <div class="modal-footer">
+      <button class="btn btn-primary" onclick="saveWithRemark()">💾 儲存</button>
+      <button class="btn btn-secondary" onclick="skipRemark()">略過</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="membersModal">
+  <div class="modal">
+    <h2>👨‍👩‍👧 家庭成員</h2>
+    <div id="membersList"></div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeMembers()">關閉</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+</body>
+</html>
