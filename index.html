@@ -248,10 +248,31 @@ function updateRing() {
   document.getElementById('timerProgress').style.strokeDasharray = CIRCUMFERENCE;
 }
 
-window.countBreath = function() {
+window.countBreath = function(event) {
   if (!isRunning) return;
   breathCount++;
   updateBreathDisplay();
+
+  // Vibration feedback
+  if (navigator.vibrate) navigator.vibrate(40);
+
+  // Ripple effect
+  const btn = document.getElementById('breathBtn');
+  const ripple = document.createElement('span');
+  ripple.className = 'ripple';
+  const size = btn.offsetWidth;
+  ripple.style.width = ripple.style.height = size + 'px';
+  ripple.style.left = '0px'; ripple.style.top = '0px';
+  btn.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 400);
+
+  // Ping ring
+  const ping = document.getElementById('breathPing');
+  ping.classList.remove('active');
+  void ping.offsetWidth; // reflow to restart animation
+  ping.classList.add('active');
+
+  // Count pulse
   const el = document.getElementById('breathCount');
   el.classList.add('pulse');
   setTimeout(() => el.classList.remove('pulse'), 100);
@@ -728,12 +749,35 @@ header {
 .timer-center{position:absolute;display:flex;flex-direction:column;align-items:center;}
 .timer-display{font-family:'Fraunces',serif;font-size:44px;font-weight:700;color:var(--primary);line-height:1;}
 .timer-label{font-size:11px;color:var(--text-muted);font-weight:700;letter-spacing:1px;margin-top:4px;}
-.breath-counter{display:flex;align-items:center;justify-content:center;gap:20px;margin-bottom:20px;}
+.breath-counter{display:flex;align-items:center;justify-content:center;gap:24px;margin-bottom:20px;}
 .breath-count{font-family:'Fraunces',serif;font-size:56px;font-weight:700;color:var(--accent);line-height:1;min-width:70px;text-align:center;transition:transform .1s;}
 .breath-count.pulse{transform:scale(1.15);}
 .breath-count-label{font-size:12px;color:var(--text-muted);font-weight:700;}
-.btn-breath{width:84px;height:84px;border-radius:50%;background:var(--accent);border:none;cursor:pointer;font-size:32px;display:flex;align-items:center;justify-content:center;box-shadow:0 6px 20px rgba(91,140,122,.35);transition:.15s;-webkit-tap-highlight-color:transparent;}
-.btn-breath:active{transform:scale(.92);}
+.btn-breath-wrap{position:relative;display:flex;align-items:center;justify-content:center;}
+.btn-breath{
+  width:110px;height:110px;border-radius:50%;
+  background:var(--accent);border:none;cursor:pointer;
+  font-size:40px;display:flex;align-items:center;justify-content:center;
+  box-shadow:0 8px 28px rgba(91,140,122,.4);
+  transition:.15s;-webkit-tap-highlight-color:transparent;
+  position:relative;overflow:hidden;
+}
+.btn-breath:active{transform:scale(.91);box-shadow:0 3px 10px rgba(91,140,122,.3);}
+.btn-breath:disabled{opacity:.35;cursor:not-allowed;}
+.btn-breath .ripple{
+  position:absolute;border-radius:50%;
+  background:rgba(255,255,255,.4);
+  transform:scale(0);animation:ripple .4s linear;
+  pointer-events:none;
+}
+@keyframes ripple{to{transform:scale(3);opacity:0;}}
+.breath-ping{
+  position:absolute;width:110px;height:110px;border-radius:50%;
+  background:var(--accent);opacity:0;
+  animation:none;pointer-events:none;
+}
+.breath-ping.active{animation:ping .4s ease-out;}
+@keyframes ping{0%{transform:scale(1);opacity:.5;}100%{transform:scale(1.6);opacity:0;}}
 .controls{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;}
 .btn{padding:11px 24px;border-radius:50px;border:none;font-family:'Nunito',sans-serif;font-size:14px;font-weight:800;cursor:pointer;transition:.2s;display:flex;align-items:center;gap:6px;}
 .btn-primary{background:var(--primary);color:#fff;box-shadow:0 4px 14px rgba(224,123,74,.35);}
@@ -963,7 +1007,10 @@ select.input-field{cursor:pointer;}
           <div><div class="breath-count-label">呼吸次數</div></div>
           <div class="breath-count" id="breathCount">0</div>
           <div>
-            <button class="btn-breath" id="breathBtn" onclick="countBreath()" disabled>🫁</button>
+            <div class="btn-breath-wrap">
+              <div class="breath-ping" id="breathPing"></div>
+              <button class="btn-breath" id="breathBtn" onclick="countBreath()" disabled>🫁</button>
+            </div>
           </div>
         </div>
 
